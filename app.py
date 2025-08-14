@@ -1,4 +1,3 @@
-# app.py — Viral Social Media Trends: BI + Prediction (clean)
 import os
 import numpy as np
 import pandas as pd
@@ -9,10 +8,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.experimental import enable_hist_gradient_boosting  # noqa: F401
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.metrics import classification_report
+from sklearn.ensemble import RandomForestClassifier
 
 st.set_page_config(page_title="Viral Trends BI + Prediction", layout="wide")
 st.title("📈 Viral Social Media Trends — BI & Prediction")
@@ -36,7 +33,6 @@ def load_df():
     st.stop()
 
 df = load_df()
-
 missing = [c for c in REQUIRED if c not in df.columns]
 if missing:
     st.error("Missing columns: " + ", ".join(missing))
@@ -133,11 +129,6 @@ if len(top_ht):
 st.subheader("AI: Predict Engagement Level")
 clf_df = df.dropna(subset=["Engagement_Level"]).copy()
 clf_df["Engagement_Rate"] = (clf_df["Likes"] + clf_df["Shares"] + clf_df["Comments"]) / clf_df["Views"].replace(0, np.nan)
-clf_df["Like_Rate"]    = clf_df["Likes"]    / clf_df["Views"].replace(0, np.nan)
-clf_df["Share_Rate"]   = clf_df["Shares"]   / clf_df["Views"].replace(0, np.nan)
-clf_df["Comment_Rate"] = clf_df["Comments"] / clf_df["Views"].replace(0, np.nan)
-clf_df["Like_Share_Ratio"]    = clf_df["Likes"]    / clf_df["Shares"].replace(0, np.nan)
-clf_df["Comment_Share_Ratio"] = clf_df["Comments"] / clf_df["Shares"].replace(0, np.nan)
 clf_df["Post_Date"] = pd.to_datetime(clf_df["Post_Date"], errors="coerce")
 clf_df["DayOfWeek"] = clf_df["Post_Date"].dt.dayofweek
 clf_df["Month"]     = clf_df["Post_Date"].dt.month
@@ -145,16 +136,14 @@ clf_df["Month"]     = clf_df["Post_Date"].dt.month
 cat_cols = [c for c in ["Platform","Content_Type","Region"] if c in clf_df.columns]
 num_cols = [c for c in [
     "Views","Likes","Shares","Comments",
-    "Engagement_Rate","Like_Rate","Share_Rate","Comment_Rate",
-    "Like_Share_Ratio","Comment_Share_Ratio",
-    "DayOfWeek","Month"
+    "Engagement_Rate","DayOfWeek","Month"
 ] if c in clf_df.columns]
 
 X = clf_df[cat_cols + num_cols].copy()
 y = clf_df["Engagement_Level"].astype(str)
 
 if len(clf_df) <= 100 or X.isna().all(axis=None):
-    st.info("Not enough clean/labeled rows for training after feature engineering.")
+    st.info("Not enough labeled rows for training.")
 else:
     for c in num_cols: X[c] = X[c].fillna(0)
 
@@ -162,38 +151,26 @@ else:
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    weights = compute_sample_weight(class_weight="balanced", y=y_train)
-
     pre = ColumnTransformer(
         transformers=[
-            ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=0.01), cat_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
             ("num", "passthrough", num_cols)
-        ],
-        remainder="drop"
+        ]
     )
 
     model = Pipeline(steps=[
         ("prep", pre),
-        ("hgb", HistGradientBoostingClassifier(
-            learning_rate=0.08,
-            max_depth=6,
-            max_iter=300,
-            random_state=42
+        ("rf", RandomForestClassifier(
+            n_estimators=200,
+            class_weight="balanced_subsample",
+            random_state=42,
+            n_jobs=-1
         ))
     ])
 
-    model.fit(X_train, y_train, hgb__sample_weight=weights)
+    model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
-
     st.code(classification_report(y_test, y_pred), language="text")
-
-    labels_sorted = sorted(y.unique())
-    cm = confusion_matrix(y_test, y_pred, labels=labels_sorted)
-    cm_df = pd.DataFrame(cm,
-        index=[f"Actual_{l}" for l in labels_sorted],
-        columns=[f"Pred_{l}" for l in labels_sorted]
-    )
-    st.dataframe(cm_df, use_container_width=True)
 
     st.markdown("**What-if prediction**")
     col1, col2, col3 = st.columns(3)
@@ -206,13 +183,6 @@ else:
     p_shares   = col6.number_input("Shares",   min_value=0, value=int(df["Shares"].median()))
     p_comments = col7.number_input("Comments", min_value=0, value=int(df["Comments"].median()))
 
-    er  = (p_likes + p_shares + p_comments) / p_views if p_views > 0 else 0.0
-    lr  = p_likes    / p_views if p_views > 0 else 0.0
-    sr  = p_shares   / p_views if p_views > 0 else 0.0
-    cr  = p_comments / p_views if p_views > 0 else 0.0
-    lsr = p_likes    / p_shares if p_shares > 0 else 0.0
-    csr = p_comments / p_shares if p_shares > 0 else 0.0
-
     sample = pd.DataFrame([{
         **({"Platform": p_platform} if "Platform" in X.columns else {}),
         **({"Content_Type": p_ct} if "Content_Type" in X.columns else {}),
@@ -221,25 +191,11 @@ else:
         **({"Likes": p_likes} if "Likes" in X.columns else {}),
         **({"Shares": p_shares} if "Shares" in X.columns else {}),
         **({"Comments": p_comments} if "Comments" in X.columns else {}),
-        **({"Engagement_Rate": er} if "Engagement_Rate" in X.columns else {}),
-        **({"Like_Rate": lr} if "Like_Rate" in X.columns else {}),
-        **({"Share_Rate": sr} if "Share_Rate" in X.columns else {}),
-        **({"Comment_Rate": cr} if "Comment_Rate" in X.columns else {}),
-        **({"Like_Share_Ratio": lsr} if "Like_Share_Ratio" in X.columns else {}),
-        **({"Comment_Share_Ratio": csr} if "Comment_Share_Ratio" in X.columns else {}),
+        **({"Engagement_Rate": (p_likes+p_shares+p_comments)/p_views if p_views>0 else 0.0} if "Engagement_Rate" in X.columns else {}),
         **({"DayOfWeek": 3} if "DayOfWeek" in X.columns else {}),
         **({"Month": 6} if "Month" in X.columns else {}),
     }])
 
     if st.button("Predict Engagement Level"):
         pred = model.predict(sample)[0]
-        if hasattr(model.named_steps["hgb"], "predict_proba"):
-            proba = model.predict_proba(sample)[0]
-            proba_df = pd.DataFrame({
-                "Class": model.classes_,
-                "Probability": np.round(proba, 3)
-            }).sort_values("Probability", ascending=False)
-            st.success(f"Predicted Engagement Level: **{pred}**")
-            st.dataframe(proba_df, use_container_width=True)
-        else:
-            st.success(f"Predicted Engagement Level: **{pred}**")
+        st.success(f"Predicted Engagement Level: **{pred}**")
