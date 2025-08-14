@@ -1,4 +1,4 @@
-# app.py — Viral Social Media Trends: BI + Prediction
+# app.py — Viral Social Media Trends: BI + Prediction (clean)
 import os
 import numpy as np
 import pandas as pd
@@ -10,7 +10,9 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.experimental import enable_hist_gradient_boosting  # noqa: F401
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.utils.class_weight import compute_sample_weight
 
 st.set_page_config(page_title="Viral Trends BI + Prediction", layout="wide")
 st.title("📈 Viral Social Media Trends — BI & Prediction")
@@ -27,9 +29,9 @@ up = st.sidebar.file_uploader("Choose CSV (with required columns)", type=["csv"]
 def load_df():
     if up:
         return pd.read_csv(up, encoding="utf-8", encoding_errors="replace")
-    local = "data/Cleaned_Viral_Social_Media_Trends.csv"
-    if os.path.exists(local):
-        return pd.read_csv(local, encoding="utf-8", encoding_errors="replace")
+    path = "data/Cleaned_Viral_Social_Media_Trends.csv"
+    if os.path.exists(path):
+        return pd.read_csv(path, encoding="utf-8", encoding_errors="replace")
     st.info("Upload the dataset or place it at data/Cleaned_Viral_Social_Media_Trends.csv")
     st.stop()
 
@@ -44,7 +46,6 @@ if missing:
 df["Post_Date"] = pd.to_datetime(df["Post_Date"], errors="coerce")
 for c in ["Views","Likes","Shares","Comments"]:
     df[c] = pd.to_numeric(df[c], errors="coerce")
-
 df["Engagement_Rate"] = (df["Likes"] + df["Shares"] + df["Comments"]) / df["Views"].replace(0, np.nan)
 
 st.sidebar.header("Filters")
@@ -67,18 +68,17 @@ if sel_region   != "All": f = f[f["Region"] == sel_region]
 if sel_ctype    != "All": f = f[f["Content_Type"] == sel_ctype]
 
 st.subheader("KPI Overview")
-total_views   = int(f["Views"].sum())
-total_likes   = int(f["Likes"].sum())
-total_shares  = int(f["Shares"].sum())
-total_comments= int(f["Comments"].sum())
+total_views    = int(f["Views"].sum())
+total_likes    = int(f["Likes"].sum())
+total_shares   = int(f["Shares"].sum())
+total_comments = int(f["Comments"].sum())
 avg_er = f["Engagement_Rate"].mean()*100 if f["Engagement_Rate"].notna().any() else 0
-
-k1,k2,k3,k4,k5 = st.columns(5)
-k1.metric("Views", f"{total_views:,}")
-k2.metric("Likes", f"{total_likes:,}")
-k3.metric("Shares", f"{total_shares:,}")
-k4.metric("Comments", f"{total_comments:,}")
-k5.metric("Avg Engagement Rate", f"{avg_er:.2f}%")
+c1,c2,c3,c4,c5 = st.columns(5)
+c1.metric("Views", f"{total_views:,}")
+c2.metric("Likes", f"{total_likes:,}")
+c3.metric("Shares", f"{total_shares:,}")
+c4.metric("Comments", f"{total_comments:,}")
+c5.metric("Avg Engagement Rate", f"{avg_er:.2f}%")
 
 st.subheader("Trends Over Time")
 daily = f.groupby("Post_Date").agg(
@@ -103,9 +103,9 @@ if len(f):
         Comments=("Comments","sum")
     ).reset_index()
     by_plat["Engagement_Rate"] = (by_plat["Likes"]+by_plat["Shares"]+by_plat["Comments"]) / by_plat["Views"].replace(0, np.nan)
-    cA, cB = st.columns(2)
-    cA.plotly_chart(px.bar(by_plat, x="Platform", y="Views", title="Views by platform"), use_container_width=True)
-    cB.plotly_chart(px.bar(by_plat, x="Platform", y="Engagement_Rate", title="Engagement Rate by platform"), use_container_width=True)
+    colA, colB = st.columns(2)
+    colA.plotly_chart(px.bar(by_plat, x="Platform", y="Views", title="Views by platform"), use_container_width=True)
+    colB.plotly_chart(px.bar(by_plat, x="Platform", y="Engagement_Rate", title="Engagement Rate by platform"), use_container_width=True)
 
     by_ct = f.groupby("Content_Type").agg(
         Views=("Views","sum"),
@@ -114,9 +114,9 @@ if len(f):
         Comments=("Comments","sum")
     ).reset_index()
     by_ct["Engagement_Rate"] = (by_ct["Likes"]+by_ct["Shares"]+by_ct["Comments"]) / by_ct["Views"].replace(0, np.nan)
-    cC, cD = st.columns(2)
-    cC.plotly_chart(px.bar(by_ct, x="Content_Type", y="Views", title="Views by content type"), use_container_width=True)
-    cD.plotly_chart(px.bar(by_ct, x="Content_Type", y="Engagement_Rate", title="Engagement Rate by content type"), use_container_width=True)
+    colC, colD = st.columns(2)
+    colC.plotly_chart(px.bar(by_ct, x="Content_Type", y="Views", title="Views by content type"), use_container_width=True)
+    colD.plotly_chart(px.bar(by_ct, x="Content_Type", y="Engagement_Rate", title="Engagement Rate by content type"), use_container_width=True)
 
 st.subheader("Top Hashtags")
 top_ht = (f.groupby("Hashtag")
@@ -136,6 +136,8 @@ clf_df["Engagement_Rate"] = (clf_df["Likes"] + clf_df["Shares"] + clf_df["Commen
 clf_df["Like_Rate"]    = clf_df["Likes"]    / clf_df["Views"].replace(0, np.nan)
 clf_df["Share_Rate"]   = clf_df["Shares"]   / clf_df["Views"].replace(0, np.nan)
 clf_df["Comment_Rate"] = clf_df["Comments"] / clf_df["Views"].replace(0, np.nan)
+clf_df["Like_Share_Ratio"]    = clf_df["Likes"]    / clf_df["Shares"].replace(0, np.nan)
+clf_df["Comment_Share_Ratio"] = clf_df["Comments"] / clf_df["Shares"].replace(0, np.nan)
 clf_df["Post_Date"] = pd.to_datetime(clf_df["Post_Date"], errors="coerce")
 clf_df["DayOfWeek"] = clf_df["Post_Date"].dt.dayofweek
 clf_df["Month"]     = clf_df["Post_Date"].dt.month
@@ -144,6 +146,7 @@ cat_cols = [c for c in ["Platform","Content_Type","Region"] if c in clf_df.colum
 num_cols = [c for c in [
     "Views","Likes","Shares","Comments",
     "Engagement_Rate","Like_Rate","Share_Rate","Comment_Rate",
+    "Like_Share_Ratio","Comment_Share_Ratio",
     "DayOfWeek","Month"
 ] if c in clf_df.columns]
 
@@ -159,9 +162,11 @@ else:
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
+    weights = compute_sample_weight(class_weight="balanced", y=y_train)
+
     pre = ColumnTransformer(
         transformers=[
-            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=0.01), cat_cols),
             ("num", "passthrough", num_cols)
         ],
         remainder="drop"
@@ -169,13 +174,15 @@ else:
 
     model = Pipeline(steps=[
         ("prep", pre),
-        ("rf", RandomForestClassifier(
-            n_estimators=300, class_weight="balanced",
-            random_state=42, n_jobs=-1
+        ("hgb", HistGradientBoostingClassifier(
+            learning_rate=0.08,
+            max_depth=6,
+            max_iter=300,
+            random_state=42
         ))
     ])
 
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, hgb__sample_weight=weights)
     y_pred = model.predict(X_test)
 
     st.code(classification_report(y_test, y_pred), language="text")
@@ -199,10 +206,12 @@ else:
     p_shares   = col6.number_input("Shares",   min_value=0, value=int(df["Shares"].median()))
     p_comments = col7.number_input("Comments", min_value=0, value=int(df["Comments"].median()))
 
-    p_eng_rate = (p_likes + p_shares + p_comments) / p_views if p_views > 0 else 0.0
-    p_like_r   = p_likes    / p_views if p_views > 0 else 0.0
-    p_share_r  = p_shares   / p_views if p_views > 0 else 0.0
-    p_comm_r   = p_comments / p_views if p_views > 0 else 0.0
+    er  = (p_likes + p_shares + p_comments) / p_views if p_views > 0 else 0.0
+    lr  = p_likes    / p_views if p_views > 0 else 0.0
+    sr  = p_shares   / p_views if p_views > 0 else 0.0
+    cr  = p_comments / p_views if p_views > 0 else 0.0
+    lsr = p_likes    / p_shares if p_shares > 0 else 0.0
+    csr = p_comments / p_shares if p_shares > 0 else 0.0
 
     sample = pd.DataFrame([{
         **({"Platform": p_platform} if "Platform" in X.columns else {}),
@@ -212,20 +221,22 @@ else:
         **({"Likes": p_likes} if "Likes" in X.columns else {}),
         **({"Shares": p_shares} if "Shares" in X.columns else {}),
         **({"Comments": p_comments} if "Comments" in X.columns else {}),
-        **({"Engagement_Rate": p_eng_rate} if "Engagement_Rate" in X.columns else {}),
-        **({"Like_Rate": p_like_r} if "Like_Rate" in X.columns else {}),
-        **({"Share_Rate": p_share_r} if "Share_Rate" in X.columns else {}),
-        **({"Comment_Rate": p_comm_r} if "Comment_Rate" in X.columns else {}),
+        **({"Engagement_Rate": er} if "Engagement_Rate" in X.columns else {}),
+        **({"Like_Rate": lr} if "Like_Rate" in X.columns else {}),
+        **({"Share_Rate": sr} if "Share_Rate" in X.columns else {}),
+        **({"Comment_Rate": cr} if "Comment_Rate" in X.columns else {}),
+        **({"Like_Share_Ratio": lsr} if "Like_Share_Ratio" in X.columns else {}),
+        **({"Comment_Share_Ratio": csr} if "Comment_Share_Ratio" in X.columns else {}),
         **({"DayOfWeek": 3} if "DayOfWeek" in X.columns else {}),
         **({"Month": 6} if "Month" in X.columns else {}),
     }])
 
     if st.button("Predict Engagement Level"):
         pred = model.predict(sample)[0]
-        if hasattr(model.named_steps["rf"], "predict_proba"):
+        if hasattr(model.named_steps["hgb"], "predict_proba"):
             proba = model.predict_proba(sample)[0]
             proba_df = pd.DataFrame({
-                "Class": model.named_steps["rf"].classes_,
+                "Class": model.classes_,
                 "Probability": np.round(proba, 3)
             }).sort_values("Probability", ascending=False)
             st.success(f"Predicted Engagement Level: **{pred}**")
