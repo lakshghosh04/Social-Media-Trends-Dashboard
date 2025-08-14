@@ -8,11 +8,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.metrics import classification_report, mean_absolute_error
 
-st.set_page_config(page_title="Viral Trends BI + Prediction", layout="wide")
-st.title("📈 Viral Social Media Trends — BI & Prediction (Clean)")
+st.set_page_config(page_title="Viral Trends BI + Predictions", layout="wide")
+st.title("📈 Viral Social Media Trends — BI & Predictions (Clean)")
 
 REQUIRED = [
     "Platform","Hashtag","Content_Type","Region",
@@ -20,9 +20,11 @@ REQUIRED = [
     "Engagement_Level","Post_Date"
 ]
 
-# ---- Sidebar: Upload + Filters ----
+# -------------------------
+# Data loading
+# -------------------------
 st.sidebar.header("Data")
-up = st.sidebar.file_uploader("Upload CSV (required columns present)", type=["csv"])
+up = st.sidebar.file_uploader("Upload CSV (must include required columns)", type=["csv"])
 
 def load_df():
     if up:
@@ -34,19 +36,21 @@ def load_df():
     st.stop()
 
 df = load_df()
-
 missing = [c for c in REQUIRED if c not in df.columns]
 if missing:
     st.error("Missing columns: " + ", ".join(missing))
     st.dataframe(df.head(), use_container_width=True)
     st.stop()
 
+# -------------------------
+# Basic prep
+# -------------------------
 df["Post_Date"] = pd.to_datetime(df["Post_Date"], errors="coerce")
 for c in ["Views","Likes","Shares","Comments"]:
     df[c] = pd.to_numeric(df[c], errors="coerce")
-
 df["Engagement_Rate"] = (df["Likes"] + df["Shares"] + df["Comments"]) / df["Views"].replace(0, np.nan)
 
+# Filters
 st.sidebar.header("Filters")
 dmin, dmax = df["Post_Date"].min(), df["Post_Date"].max()
 date_range = st.sidebar.date_input("Date range", value=(dmin, dmax))
@@ -66,11 +70,14 @@ if sel_platform != "All": f = f[f["Platform"] == sel_platform]
 if sel_region   != "All": f = f[f["Region"] == sel_region]
 if sel_ctype    != "All": f = f[f["Content_Type"] == sel_ctype]
 
-# ---- Tabs to reduce clutter ----
+# Tabs
 tab_overview, tab_insights, tab_predict = st.tabs(["Overview", "Insights", "Predict"])
 
+# -------------------------
+# Overview
+# -------------------------
 with tab_overview:
-    st.subheader("KPI Overview")
+    st.subheader("KPIs")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Views", f"{int(f['Views'].sum()):,}")
     c2.metric("Likes", f"{int(f['Likes'].sum()):,}")
@@ -79,7 +86,7 @@ with tab_overview:
     avg_er = f["Engagement_Rate"].mean() * 100 if f["Engagement_Rate"].notna().any() else 0
     c5.metric("Avg Engagement Rate", f"{avg_er:.2f}%")
 
-    st.markdown("**Trend**")
+    st.subheader("Trend")
     metric_choice = st.radio("Metric", ["Views", "Engagement_Rate"], horizontal=True)
     daily = f.groupby("Post_Date").agg(
         Views=("Views","sum"),
@@ -95,8 +102,11 @@ with tab_overview:
     else:
         st.info("No rows after filters.")
 
+# -------------------------
+# Insights
+# -------------------------
 with tab_insights:
-    st.subheader("Platform vs Content")
+    st.subheader("Platform & Content")
     if len(f):
         by_plat = f.groupby("Platform").agg(
             Views=("Views","sum"),
@@ -108,94 +118,179 @@ with tab_insights:
         ).reset_index()
 
         colA, colB = st.columns(2)
-        colA.plotly_chart(px.bar(by_plat, x="Platform", y="Views", title="Views by platform"),
-                          use_container_width=True)
-        colB.plotly_chart(px.bar(by_plat, x="Platform", y="Engagement_Rate",
-                                 title="Engagement Rate by platform"),
-                          use_container_width=True)
+        colA.plotly_chart(px.bar(by_plat, x="Platform", y="Views", title="Views by platform"), use_container_width=True)
+        colB.plotly_chart(px.bar(by_plat, x="Platform", y="Engagement_Rate", title="Engagement Rate by platform"), use_container_width=True)
 
         colC, colD = st.columns(2)
-        colC.plotly_chart(px.bar(by_ct, x="Content_Type", y="Views", title="Views by content type"),
-                          use_container_width=True)
-        colD.plotly_chart(px.bar(by_ct, x="Content_Type", y="Engagement_Rate",
-                                 title="Engagement Rate by content type"),
-                          use_container_width=True)
+        colC.plotly_chart(px.bar(by_ct, x="Content_Type", y="Views", title="Views by content type"), use_container_width=True)
+        colD.plotly_chart(px.bar(by_ct, x="Content_Type", y="Engagement_Rate", title="ER by content type"), use_container_width=True)
     else:
         st.info("No data after filters.")
 
+# -------------------------
+# Predict
+# -------------------------
 with tab_predict:
-    st.subheader("AI: Predict Engagement Level")
+    st.subheader("What-if inputs")
+    col1, col2, col3 = st.columns(3)
+    p_platform = col1.selectbox("Platform", sorted(df["Platform"].dropna().unique()))
+    p_region   = col2.selectbox("Region", sorted(df["Region"].dropna().unique()))
+    # user can pick a content type, but we will also recommend one:
+    p_ct_user  = col3.selectbox("Content Type (you can pick any)", sorted(df["Content_Type"].dropna().unique()))
 
-    clf_df = df.dropna(subset=["Engagement_Level"]).copy()
-    clf_df["Engagement_Rate"] = (clf_df["Likes"] + clf_df["Shares"] + clf_df["Comments"]) / clf_df["Views"].replace(0, np.nan)
-    clf_df["Post_Date"] = pd.to_datetime(clf_df["Post_Date"], errors="coerce")
-    clf_df["DayOfWeek"] = clf_df["Post_Date"].dt.dayofweek
-    clf_df["Month"]     = clf_df["Post_Date"].dt.month
+    col4, col5, col6, col7 = st.columns(4)
+    p_views    = col4.number_input("Views",    min_value=0, value=int(df["Views"].median()))
+    p_likes    = col5.number_input("Likes",    min_value=0, value=int(df["Likes"].median()))
+    p_shares   = col6.number_input("Shares",   min_value=0, value=int(df["Shares"].median()))
+    p_comments = col7.number_input("Comments", min_value=0, value=int(df["Comments"].median()))
 
-    cat_cols = [c for c in ["Platform","Content_Type","Region"] if c in clf_df.columns]
-    num_cols = [c for c in [
-        "Views","Likes","Shares","Comments","Engagement_Rate","DayOfWeek","Month"
-    ] if c in clf_df.columns]
+    # Prepare base training frame (common features)
+    base = df.dropna(subset=["Engagement_Level"]).copy()
+    base["Post_Date"] = pd.to_datetime(base["Post_Date"], errors="coerce")
+    base["DayOfWeek"] = base["Post_Date"].dt.dayofweek
+    base["Month"]     = base["Post_Date"].dt.month
+    base["Engagement_Rate"] = (base["Likes"] + base["Shares"] + base["Comments"]) / base["Views"].replace(0, np.nan)
 
-    X = clf_df[cat_cols + num_cols].copy()
-    y = clf_df["Engagement_Level"].astype(str)
+    cat_cols = ["Platform","Content_Type","Region"]
+    num_cols = ["Views","Likes","Shares","Comments","Engagement_Rate","DayOfWeek","Month"]
 
-    if len(clf_df) <= 100 or X.isna().all(axis=None):
-        st.info("Not enough labeled rows for training.")
-    else:
-        for c in num_cols:
-            X[c] = X[c].fillna(0)
+    # Clean numerics
+    for c in num_cols:
+        if c in base.columns:
+            base[c] = pd.to_numeric(base[c], errors="coerce").fillna(0)
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
+    # ---------- A) Predict Engagement Level (classification) ----------
+    st.subheader("Prediction 1 — Engagement Level (High/Medium/Low)")
+    if len(base) > 200:
+        X_cls = base[cat_cols + num_cols].copy()
+        y_cls = base["Engagement_Level"].astype(str)
 
-        pre = ColumnTransformer(
+        Xtr, Xte, ytr, yte = train_test_split(X_cls, y_cls, test_size=0.2, random_state=42, stratify=y_cls)
+
+        pre_cls = ColumnTransformer(
             transformers=[
                 ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
                 ("num", "passthrough", num_cols)
             ]
         )
-
-        model = Pipeline(steps=[
-            ("prep", pre),
-            ("rf", RandomForestClassifier(
-                n_estimators=200,
-                class_weight="balanced_subsample",
-                random_state=42,
-                n_jobs=-1
-            ))
+        clf = Pipeline(steps=[
+            ("prep", pre_cls),
+            ("rf", RandomForestClassifier(n_estimators=250, class_weight="balanced_subsample",
+                                          random_state=42, n_jobs=-1))
         ])
+        clf.fit(Xtr, ytr)
+        yhat = clf.predict(Xte)
+        st.code(classification_report(yte, yhat, zero_division=0), language="text")
 
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        st.code(classification_report(y_test, y_pred), language="text")
-
-        st.markdown("**What-if**")
-        col1, col2, col3 = st.columns(3)
-        p_platform = col1.selectbox("Platform", sorted(df["Platform"].dropna().unique()))
-        p_ct       = col2.selectbox("Content Type", sorted(df["Content_Type"].dropna().unique()))
-        p_region   = col3.selectbox("Region", sorted(df["Region"].dropna().unique()))
-        col4, col5, col6, col7 = st.columns(4)
-        p_views    = col4.number_input("Views",    min_value=0, value=int(df["Views"].median()))
-        p_likes    = col5.number_input("Likes",    min_value=0, value=int(df["Likes"].median()))
-        p_shares   = col6.number_input("Shares",   min_value=0, value=int(df["Shares"].median()))
-        p_comments = col7.number_input("Comments", min_value=0, value=int(df["Comments"].median()))
-
-        sample = pd.DataFrame([{
-            **({"Platform": p_platform} if "Platform" in X.columns else {}),
-            **({"Content_Type": p_ct} if "Content_Type" in X.columns else {}),
-            **({"Region": p_region} if "Region" in X.columns else {}),
-            **({"Views": p_views} if "Views" in X.columns else {}),
-            **({"Likes": p_likes} if "Likes" in X.columns else {}),
-            **({"Shares": p_shares} if "Shares" in X.columns else {}),
-            **({"Comments": p_comments} if "Comments" in X.columns else {}),
-            **({"Engagement_Rate": (p_likes+p_shares+p_comments)/p_views if p_views>0 else 0.0}
-               if "Engagement_Rate" in X.columns else {}),
-            **({"DayOfWeek": 3} if "DayOfWeek" in X.columns else {}),
-            **({"Month": 6} if "Month" in X.columns else {}),
+        # What-if sample for classification
+        er = (p_likes + p_shares + p_comments) / p_views if p_views > 0 else 0.0
+        sample_cls = pd.DataFrame([{
+            "Platform": p_platform,
+            "Content_Type": p_ct_user,
+            "Region": p_region,
+            "Views": p_views, "Likes": p_likes, "Shares": p_shares, "Comments": p_comments,
+            "Engagement_Rate": er, "DayOfWeek": 3, "Month": 6
         }])
+        pred_level = clf.predict(sample_cls)[0]
+        st.success(f"Predicted Engagement Level: **{pred_level}**")
+    else:
+        st.info("Not enough labeled rows to train Engagement Level model.")
 
-        if st.button("Predict"):
-            pred = model.predict(sample)[0]
-            st.success(f"Predicted Engagement Level: **{pred}**")
+    # ---------- B) Predict Engagement Rate % (regression) ----------
+    st.subheader("Prediction 2 — Engagement Rate (%)")
+    # train on rows with ER available
+    reg_df = base.dropna(subset=["Engagement_Rate"]).copy()
+    if len(reg_df) > 200:
+        X_reg = reg_df[cat_cols + num_cols].copy()
+        y_reg = reg_df["Engagement_Rate"].astype(float)
+
+        Xtr, Xte, ytr, yte = train_test_split(X_reg, y_reg, test_size=0.2, random_state=42)
+        pre_reg = ColumnTransformer(
+            transformers=[
+                ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+                ("num", "passthrough", num_cols)
+            ]
+        )
+        reg = Pipeline(steps=[
+            ("prep", pre_reg),
+            ("rf", RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1))
+        ])
+        reg.fit(Xtr, ytr)
+        yhat_reg = reg.predict(Xte)
+        mae = mean_absolute_error(yte, yhat_reg)
+        st.write(f"Validation MAE: **{mae:.4f}** (Engagement Rate points)")
+
+        sample_reg = sample_cls.copy()
+        pred_er = float(reg.predict(sample_reg)[0]) * 100
+        st.success(f"Predicted Engagement Rate: **{pred_er:.2f}%**")
+    else:
+        st.info("Not enough rows to train Engagement Rate regressor.")
+
+    # ---------- C) Recommend Best Content Type (classification to High) ----------
+    st.subheader("Prediction 3 — Recommended Content Type")
+    # Binary label: High vs Not-High
+    bin_df = base.copy()
+    bin_df = bin_df.dropna(subset=["Engagement_Level"])
+    bin_df["HighFlag"] = (bin_df["Engagement_Level"].astype(str) == "High").astype(int)
+
+    if len(bin_df) > 200:
+        X_bin = bin_df[cat_cols + num_cols].copy()
+        y_bin = bin_df["HighFlag"].astype(int)
+
+        Xtr, Xte, ytr, yte = train_test_split(X_bin, y_bin, test_size=0.2, random_state=42, stratify=y_bin)
+
+        pre_bin = ColumnTransformer(
+            transformers=[
+                ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+                ("num", "passthrough", num_cols)
+            ]
+        )
+        bin_clf = Pipeline(steps=[
+            ("prep", pre_bin),
+            ("rf", RandomForestClassifier(n_estimators=250, class_weight="balanced_subsample",
+                                          random_state=42, n_jobs=-1))
+        ])
+        bin_clf.fit(Xtr, ytr)
+
+        # For recommendation, evaluate all available content types with the same inputs
+        candidate_cts = sorted(df["Content_Type"].dropna().unique().tolist())
+        rows = []
+        for ct in candidate_cts:
+            rows.append({
+                "Platform": p_platform,
+                "Content_Type": ct,
+                "Region": p_region,
+                "Views": p_views, "Likes": p_likes, "Shares": p_shares, "Comments": p_comments,
+                "Engagement_Rate": er, "DayOfWeek": 3, "Month": 6
+            })
+        rec_frame = pd.DataFrame(rows)
+        probs = bin_clf.predict_proba(rec_frame)[:, 1]  # probability of High
+        rec_df = pd.DataFrame({"Content_Type": candidate_cts, "P(High)": probs})
+        rec_df = rec_df.sort_values("P(High)", ascending=False)
+        best_ct = rec_df.iloc[0]["Content_Type"]
+        st.success(f"Recommended Content Type: **{best_ct}**")
+        st.dataframe(rec_df.head(10), use_container_width=True)
+    else:
+        st.info("Not enough rows to train Content Type recommender.")
+
+    # ---------- D) Hashtag Suggestions (historical top ER)
+    st.subheader("Hashtag Suggestions")
+    # Filter historical data to the user's context (platform/region and recommended CT if available)
+    ctx = df.copy()
+    ctx = ctx[(ctx["Platform"] == p_platform) & (ctx["Region"] == p_region)]
+    if "best_ct" in locals():
+        ctx = ctx[ctx["Content_Type"] == best_ct]
+    elif p_ct_user:
+        ctx = ctx[ctx["Content_Type"] == p_ct_user]
+
+    if len(ctx):
+        tag_perf = (ctx.groupby("Hashtag")
+                       .agg(ER=("Engagement_Rate","mean"), Views=("Views","sum"))
+                       .reset_index())
+        # prioritize hashtags with non-trivial volume
+        tag_perf = tag_perf[tag_perf["Views"] > 0]
+        tag_perf = tag_perf.sort_values(["ER","Views"], ascending=[False, False]).head(15)
+        st.write("Top hashtags (by Engagement Rate, with volume):")
+        st.dataframe(tag_perf[["Hashtag","ER","Views"]].round({"ER":4}), use_container_width=True)
+    else:
+        st.write("No historical matches for this context. Try different filters.")
