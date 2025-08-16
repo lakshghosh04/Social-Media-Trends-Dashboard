@@ -12,7 +12,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import classification_report, mean_absolute_error
 
 st.set_page_config(page_title="Viral Trends BI + Predictions", layout="wide")
-st.title("📈 Viral Social Media Trends — BI & Predictions (Clean)")
+st.title("Viral Social Media Trends — BI & Predictions")
 
 REQUIRED = [
     "Platform","Hashtag","Content_Type","Region",
